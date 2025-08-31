@@ -1,275 +1,241 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PGIS: Abandoned Buildings Reporting – Tshwane Region 3 (MVP)</title>
-  <link rel="preconnect" href="https://unpkg.com" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
-  <style>
-    :root{--bg:#0b1020;--panel:#111831;--card:#1a2342;--text:#e8edf8;--muted:#9fb0d9;--accent:#79b8ff}
-    *{box-sizing:border-box}
-    html,body{height:100%}
-    body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--text)}
-    header{padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:12px}
-    header h1{font-size:18px;margin:0;letter-spacing:.2px}
-    header .badge{font-size:12px;padding:4px 8px;border:1px solid rgba(255,255,255,.15);border-radius:999px;color:var(--muted)}
+<script>
+  // === Config ===
+  const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwXVjxxP2wWIEsolYSBswjXkKuI4oIpujXx9kzwdgNcer_UIsSHF7Tu7ASlR2tdLThPbQ/exec";
+  const SUBMIT_TOKEN   = "pgis_token_7c28";
+  const EXPORT_PASSWORD = "Hydro2025Secure!";
 
-    #consentScreen{display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--bg);padding:20px}
-    #consentBox{max-width:700px;background:var(--panel);padding:24px;border-radius:14px;border:1px solid rgba(255,255,255,.1)}
-    #consentBox h2{margin-top:0}
-    #consentBox p{font-size:14px;line-height:1.6;color:var(--text)}
-    #consentBox .btn{margin-top:16px}
+  // === Globals (init after consent) ===
+  let map, drawn, drawControl;
+  const submissions = [];
 
-    #app{display:none}
-    .wrap{display:grid;grid-template-columns:330px 1fr;min-height:calc(100vh - 58px)}
-    aside{background:var(--panel);padding:16px 14px;overflow:auto}
-    main{position:relative;min-height:calc(100vh - 58px)}
-    #map{position:absolute;inset:0;height:100%;width:100%;min-height:420px}
+  // --- UI helpers ---
+  const toast = (msg) => {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    setTimeout(() => (t.style.display = 'none'), 3000);
+  };
+  const isIOS = () =>
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-    .card{background:var(--card);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:12px;margin-bottom:12px}
-    label{display:block;font-size:12px;color:var(--muted);margin:8px 0 6px}
-    input,select,textarea{width:100%;padding:10px 12px;background:#101831;border:1px solid rgba(255,255,255,.12);border-radius:10px;color:var(--text)}
-    textarea{min-height:70px}
-    .row{display:flex;gap:8px}
-    .row>*{flex:1}
-    .btn{display:inline-block;background:var(--accent);color:#0b132b;border:none;border-radius:10px;padding:10px 12px;font-weight:600;cursor:pointer}
-    .btn.secondary{background:transparent;border:1px solid rgba(255,255,255,.2);color:var(--text)}
-    .btn.full{width:100%}
-    .muted{color:var(--muted);font-size:12px}
-    .hl{color:#b3d4ff}
-    .legend{position:absolute;z-index:500;background:rgba(17,24,49,.9);padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.15);bottom:14px;left:14px;font-size:12px}
-    .legend b{color:#cfe1ff}
-    .toast{position:fixed;right:12px;bottom:12px;background:#142046;border:1px solid rgba(255,255,255,.18);padding:10px 12px;border-radius:10px;font-size:12px;display:none}
+  // --- Local autosave ---
+  function saveLocal() {
+    try { localStorage.setItem('pgis_submissions', JSON.stringify(submissions)); } catch {}
+  }
+  function restoreLocal() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('pgis_submissions') || '[]');
+      if (saved.length && drawn) {
+        saved.forEach(f => {
+          const [lng, lat] = f.geometry.coordinates;
+          L.marker([lat, lng]).addTo(drawn);
+        });
+        submissions.push(...saved);
+        toast(`Restored ${saved.length} saved point(s) on this device.`);
+      }
+    } catch {}
+  }
 
-    @media (max-width: 820px) {
-      .wrap { grid-template-columns: 1fr; }
-      aside { padding: 10px 10px 4px; }
-      main  { min-height: 60vh; }
-      #map  { min-height: 60vh; }
-      header h1 { font-size: 16px; }
-      input, select, textarea, .btn { font-size: 16px; }
-      .btn { padding: 12px 14px; border-radius: 12px; }
-    }
-    #exportBtn { margin-bottom: 12px; }
-  </style>
-</head>
-<body>
-  <div id="consentScreen">
-    <div id="consentBox">
-      <h2>Participant Information and Consent</h2>
-      <p><b>Purpose of study:</b> Mapping abandoned/vacant/underutilised buildings in Tshwane to assess the feasibility of inner-city hydroponics for food security.</p>
-      <p><b>Voluntary participation:</b> You may withdraw at any time. Provide only information you are comfortable sharing.</p>
-      <p><b>Confidentiality:</b> Name/contact are optional. Data is anonymised in reporting.</p>
-      <p><b>Data handling:</b> Submissions are transmitted to a secure Google service (Apps Script) controlled by the researcher and stored in a private spreadsheet.</p>
-      <label><input type="checkbox" id="consentAgree"> I have read and consent to participate.</label><br>
-      <button id="startBtn" class="btn">Proceed to Map</button>
-    </div>
-  </div>
-
-  <div id="app">
-    <header>
-      <h1>PGIS: Abandoned Buildings Reporter</h1>
-      <span class="badge">Tshwane Region 3 • MVP</span>
-    </header>
-    <div class="wrap">
-      <aside>
-        <div class="card">
-          <div class="pill">Participant</div>
-          <label for="pname">Your name (or initials)</label>
-          <input id="pname" placeholder="Optional" />
-          <div class="row">
-            <div>
-              <label for="ward">Ward number</label>
-              <input id="ward" type="number" min="1" placeholder="e.g., 58" />
-            </div>
-            <div>
-              <label for="contact">Contact (optional)</label>
-              <input id="contact" placeholder="email or phone" />
-            </div>
-          </div>
-          <label for="sessionNote">General notes (optional)</label>
-          <textarea id="sessionNote" placeholder="Any overall notes for this session"></textarea>
+  // --- Popup form ---
+  function popupFormHTML(d = {}) {
+    const defaults = { status:'Abandoned', access:'Unknown', risk:'Unknown', notes:'' };
+    const v = Object.assign(defaults, d);
+    return `
+      <div style="min-width:220px">
+        <label style="display:block;font-size:12px;color:#9fb0d9;margin:4px 0">Building status</label>
+        <select id="f_status">
+          <option ${v.status==='Abandoned'?'selected':''}>Abandoned</option>
+          <option ${v.status==='Vacant'?'selected':''}>Vacant</option>
+          <option ${v.status==='Underutilised'?'selected':''}>Underutilised</option>
+          <option ${v.status==='Other'?'selected':''}>Other</option>
+        </select>
+        <label style="display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px">Access</label>
+        <select id="f_access">
+          <option ${v.access==='Unknown'?'selected':''}>Unknown</option>
+          <option ${v.access==='Open'?'selected':''}>Open</option>
+          <option ${v.access==='Fenced'?'selected':''}>Fenced</option>
+          <option ${v.access==='Guarded'?'selected':''}>Guarded</option>
+        </select>
+        <label style="display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px">Apparent risk</label>
+        <select id="f_risk">
+          <option ${v.risk==='Unknown'?'selected':''}>Unknown</option>
+          <option ${v.risk==='Low'?'selected':''}>Low</option>
+          <option ${v.risk==='Medium'?'selected':''}>Medium</option>
+          <option ${v.risk==='High'?'selected':''}>High</option>
+        </select>
+        <label style="display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px">Notes</label>
+        <textarea id="f_notes" placeholder="Add any details...">${v.notes||''}</textarea>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button id="savePoint" class="btn" style="flex:1">Save</button>
+          <button id="cancelPoint" class="btn secondary" style="flex:1">Cancel</button>
         </div>
+      </div>`;
+  }
 
-        <div class="card">
-          <div class="pill">Add a building</div>
-          <ol class="muted">
-            <li>Click <span class="hl">Add point</span> below, then click the map to drop a pin on the building.</li>
-            <li>Fill in the popup form (status, access, risk, notes) and save.</li>
-            <li>Repeat for multiple buildings.</li>
-          </ol>
-          <div class="row">
-            <button id="addPoint" class="btn">➕ Add point</button>
-            <button id="locate" class="btn secondary">📍 Use my location</button>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="pill">Export / Submit</div>
-          <p class="muted">Export requires researcher password. "Submit" sends your data securely to the researcher.</p>
-          <button id="exportBtn" class="btn full">⬇️ Export Data (GeoJSON, researcher only)</button>
-          <button id="submitBtn" class="btn full">📨 Submit to Researcher</button>
-        </div>
-      </aside>
-
-      <main>
-        <div id="map"></div>
-        <div class="legend">↳ <b>How to use:</b> Click <i>Add point</i> → click map → fill popup → Save.</div>
-        <div id="toast" class="toast"></div>
-      </main>
-    </div>
-  </div>
-
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
-  <script>
-    const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwXVjxxP2wWIEsolYSBswjXkKuI4oIpujXx9kzwdgNcer_UIsSHF7Tu7ASlR2tdLThPbQ/exec";
-    const SUBMIT_TOKEN   = "pgis_token_7c28";
-
-    const map = L.map('map', { zoomControl: true });
-    const start = L.latLng(-25.746, 28.190);
+  // --- Initialize Leaflet AFTER consent ---
+  function initMapOnce() {
+    if (map) return;
+    map = L.map('map', { zoomControl: true });
+    const start = L.latLng(-25.746, 28.190); // Tshwane CBD approx
     map.setView(start, 12);
-    const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
-    const drawn = new L.FeatureGroup();
+    drawn = new L.FeatureGroup();
     map.addLayer(drawn);
 
-    const drawControl = new L.Control.Draw({
+    drawControl = new L.Control.Draw({
       draw: { polygon:false, polyline:false, rectangle:false, circle:false, circlemarker:false, marker:{ title:'Add abandoned building point' } },
       edit: { featureGroup: drawn }
     });
     map.addControl(drawControl);
 
-    window.addEventListener('resize', () => map.invalidateSize(true));
-
-    document.getElementById('startBtn').addEventListener('click', ()=>{
-      if(!document.getElementById('consentAgree').checked){
-        alert('Please check the consent box to continue.');
-        return;
-      }
-      document.getElementById('consentScreen').style.display='none';
-      document.getElementById('app').style.display='block';
-      setTimeout(()=>map.invalidateSize(true), 50);
-    });
-
-    const toast=(msg)=>{const t=document.getElementById('toast');t.textContent=msg;t.style.display='block';setTimeout(()=>t.style.display='none',3000)}
-
-    function popupFormHTML(defaults={}) {
-      const d = Object.assign({status:'Abandoned',access:'Unknown',risk:'Unknown',notes:''}, defaults);
-      return `
-        <div style="min-width:220px">
-          <label style="display:block;font-size:12px;color:#9fb0d9;margin:4px 0">Building status</label>
-          <select id="f_status">
-            <option ${d.status==='Abandoned'?'selected':''}>Abandoned</option>
-            <option ${d.status==='Vacant'?'selected':''}>Vacant</option>
-            <option ${d.status==='Underutilised'?'selected':''}>Underutilised</option>
-            <option ${d.status==='Other'?'selected':''}>Other</option>
-          </select>
-          <label style="display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px">Access</label>
-          <select id="f_access">
-            <option ${d.access==='Unknown'?'selected':''}>Unknown</option>
-            <option ${d.access==='Open'?'selected':''}>Open</option>
-            <option ${d.access==='Fenced'?'selected':''}>Fenced</option>
-            <option ${d.access==='Guarded'?'selected':''}>Guarded</option>
-          </select>
-          <label style="display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px">Apparent risk</label>
-          <select id="f_risk">
-            <option ${d.risk==='Unknown'?'selected':''}>Unknown</option>
-            <option ${d.risk==='Low'?'selected':''}>Low</option>
-            <option ${d.risk==='Medium'?'selected':''}>Medium</option>
-            <option ${d.risk==='High'?'selected':''}>High</option>
-          </select>
-          <label style="display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px">Notes</label>
-          <textarea id="f_notes" placeholder="Add any details...">${d.notes||''}</textarea>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button id="savePoint" class="btn" style="flex:1">Save</button>
-            <button id="cancelPoint" class="btn secondary" style="flex:1">Cancel</button>
-          </div>
-        </div>`;
-    }
-
-    const submissions = [];
-    function saveLocal(){ try{ localStorage.setItem("pgis_submissions", JSON.stringify(submissions)); }catch(_){} }
-    (function restoreLocal(){
-      try{
-        const saved = JSON.parse(localStorage.getItem("pgis_submissions") || "[]");
-        if(saved.length){
-          saved.forEach(f=>{ const [lng,lat]=f.geometry.coordinates; const layer=L.marker([lat,lng]); drawn.addLayer(layer); });
-          submissions.push(...saved);
-          toast(`Restored ${saved.length} saved point(s) on this device.`);
-        }
-      }catch(_){}
-    })();
-
-    document.getElementById('addPoint').addEventListener('click', ()=>{
+    // Buttons (now the elements are visible)
+    document.getElementById('addPoint').addEventListener('click', () => {
       new L.Draw.Marker(map, drawControl.options.draw.marker).enable();
       toast('Click the map to place a point…');
     });
-    document.getElementById('locate').addEventListener('click', ()=>{
-      map.locate({setView:true, maxZoom:17});
-      setTimeout(()=>map.invalidateSize(true), 50);
+    document.getElementById('locate').addEventListener('click', () => {
+      map.locate({ setView:true, maxZoom:17 });
+      setTimeout(() => map.invalidateSize(true), 50);
     });
 
-    map.on(L.Draw.Event.CREATED, function (e) {
-      const layer  = e.layer;
+    // Drawing handler
+    map.on(L.Draw.Event.CREATED, (e) => {
+      const layer = e.layer;
       const latlng = layer.getLatLng();
       drawn.addLayer(layer);
       layer.bindPopup(popupFormHTML());
-      setTimeout(()=> layer.openPopup(), 0);
+      setTimeout(() => layer.openPopup(), 0);
 
-      layer.on('popupopen', ()=>{
-        const saveBtn   = document.getElementById('savePoint');
+      layer.on('popupopen', () => {
+        const saveBtn = document.getElementById('savePoint');
         const cancelBtn = document.getElementById('cancelPoint');
 
-        if (saveBtn) saveBtn.onclick = ()=>{
-          const participant = document.getElementById('pname').value.trim();
-          const ward        = document.getElementById('ward').value.trim();
-          const contact     = document.getElementById('contact').value.trim();
-          const sessionNote = document.getElementById('sessionNote').value.trim();
-          const status      = document.getElementById('f_status').value;
-          const access      = document.getElementById('f_access').value;
-          const risk        = document.getElementById('f_risk').value;
-          const notes       = document.getElementById('f_notes').value.trim();
-
+        if (saveBtn) saveBtn.onclick = () => {
           const feature = {
-            type:'Feature',
-            geometry:{ type:'Point', coordinates:[latlng.lng, latlng.lat] },
-            properties:{ participant, ward, contact, sessionNote, status, access, risk, notes, created_at:new Date().toISOString() }
+            type: 'Feature',
+            geometry: { type:'Point', coordinates:[latlng.lng, latlng.lat] },
+            properties: {
+              participant: document.getElementById('pname').value.trim(),
+              ward:        document.getElementById('ward').value.trim(),
+              contact:     document.getElementById('contact').value.trim(),
+              sessionNote: document.getElementById('sessionNote').value.trim(),
+              status:      document.getElementById('f_status').value,
+              access:      document.getElementById('f_access').value,
+              risk:        document.getElementById('f_risk').value,
+              notes:       document.getElementById('f_notes').value.trim(),
+              created_at:  new Date().toISOString()
+            }
           };
-
           submissions.push(feature);
           saveLocal();
           layer.closePopup();
           toast('Point saved.');
         };
 
-        if (cancelBtn) cancelBtn.onclick = ()=>{
+        if (cancelBtn) cancelBtn.onclick = () => {
           drawn.removeLayer(layer);
           toast('Point discarded');
         };
       });
     });
 
-    const EXPORT_PASSWORD = "Hydro2025Secure!";
-    const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    // Resize fixes + restore saved points
+    window.addEventListener('resize', () => map.invalidateSize(true));
+    setTimeout(() => map.invalidateSize(true), 50);
+    restoreLocal();
+  }
 
-    document.getElementById('exportBtn').addEventListener('click', ()=>{
-      const pwd = prompt('Enter researcher password to export:');
-      if(pwd !== EXPORT_PASSWORD){ alert('Incorrect password. Export denied.'); return; }
-      if(submissions.length===0){ alert('No data to export.'); return; }
+  // --- Consent flow ---
+  function showApp() {
+    document.getElementById('consentScreen').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    initMapOnce();
+  }
+  window.addEventListener('DOMContentLoaded', () => {
+    const startBtn = document.getElementById('startBtn');
+    startBtn?.addEventListener('click', () => {
+      if (!document.getElementById('consentAgree').checked) {
+        alert('Please check the consent box to continue.');
+        return;
+      }
+      showApp();
+    });
+  });
 
-      const fc = { type:'FeatureCollection', features: submissions };
-      const blob = new Blob([JSON.stringify(fc, null, 2)], {type:'application/geo+json'});
-      const url  = URL.createObjectURL(blob);
+  // --- Export (researcher only) ---
+  document.getElementById('exportBtn').addEventListener('click', () => {
+    const pwd = prompt('Enter researcher password to export:');
+    if (pwd !== EXPORT_PASSWORD) { alert('Incorrect password. Export denied.'); return; }
+    if (submissions.length === 0) { alert('No data to export.'); return; }
 
-      if(isIOS()){
-        window.open(url, '_blank');
-        setTimeout(()=>URL.revokeObjectURL(url), 1000);
-        alert('On iPhone/iPad, use the Share button in the new tab → "Save to Files" to keep the .geojson.');
+    const fc = { type:'FeatureCollection', features: submissions };
+    const blob = new Blob([JSON.stringify(fc, null, 2)], { type:'application/geo+json' });
+    const url  = URL.createObjectURL(blob);
+
+    if (isIOS()) {
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      alert('On iPhone/iPad, use the Share button in the new tab → "Save to Files" to keep the .geojson.');
+    } else {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'abandoned_buildings.geojson';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+  });
+
+  // --- Submit to Researcher (text/plain to avoid CORS preflight) ---
+  async function submitToResearcher() {
+    if (!navigator.onLine) { alert("You're offline. Please connect and try again."); return; }
+    if (submissions.length === 0) { alert('No points to submit yet.'); return; }
+
+    const payload = {
+      token: SUBMIT_TOKEN,
+      participant: document.getElementById('pname').value.trim(),
+      ward:        document.getElementById('ward').value.trim(),
+      contact:     document.getElementById('contact').value.trim(),
+      sessionNote: document.getElementById('sessionNote').value.trim(),
+      features:    submissions,
+      userAgent:   navigator.userAgent || ''
+    };
+
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 15000);
+
+    try {
+      const res = await fetch(GAS_WEBAPP_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // avoids preflight
+        body: JSON.stringify(payload),
+        signal: ctrl.signal
+      });
+      clearTimeout(t);
+      let data = {};
+      try { data = await res.json(); } catch {}
+
+      if (res.ok) {
+        try { localStorage.removeItem('pgis_submissions'); } catch {}
+        toast('Thank you! Your submission has been received and sent to the researcher.');
       } else {
-        const a = document.createElement('a');
-        a.href = url; a.download
+        alert('Submission error: ' + (data.message || res.status + ' ' + res.statusText));
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') alert('Network timeout. Try again on a stable connection.');
+      else { alert('Network error. Please try again when you have connectivity.'); console.error(e); }
+    }
+  }
+  document.getElementById('submitBtn').addEventListener('click', submitToResearcher);
+
+  // Safety: if app is already visible (e.g., hot reload), ensure map is inited
+  window.addEventListener('load', () => {
+    if (document.getElementById('app').style.display === 'block') initMapOnce();
+  });
+</script>
