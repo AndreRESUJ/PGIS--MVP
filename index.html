@@ -53,6 +53,8 @@
       input, select, textarea, .btn { font-size: 16px; }
       .btn { padding: 12px 14px; border-radius: 12px; }
     }
+    /* Space between Export and Submit buttons */
+    #exportBtn { margin-bottom: 12px; }
   </style>
 </head>
 <body>
@@ -63,7 +65,7 @@
       <p><b>Purpose of study:</b> Mapping abandoned/vacant/underutilised buildings in Tshwane to assess the feasibility of inner-city hydroponics for food security.</p>
       <p><b>Voluntary participation:</b> You may withdraw at any time. Provide only information you are comfortable sharing.</p>
       <p><b>Confidentiality:</b> Name/contact are optional. Data is anonymised in reporting.</p>
-      <p><b>Data handling:</b> Data you enter stays in this browser until the researcher exports or submits it. Participants cannot export.</p>
+      <p><b>Data handling:</b> Submissions are transmitted to a secure Google service (Apps Script) controlled by the researcher and stored in a private spreadsheet.</p>
       <label><input type="checkbox" id="consentAgree"> I have read and consent to participate.</label><br>
       <button id="startBtn" class="btn">Proceed to Map</button>
     </div>
@@ -128,7 +130,7 @@
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script>
     // ===== Submissions endpoint (Google Apps Script) =====
-    const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwXVjxxP2wWIEsolYSBswjXkKuI4oIpujXx9kzwdgNcer_UIsSHF7Tu7ASlR2tdLThPbQ/exec"; // provided by Andre
+    const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwXVjxxP2wWIEsolYSBswjXkKuI4oIpujXx9kzwdgNcer_UIsSHF7Tu7ASlR2tdLThPbQ/exec"; // /exec URL
     const SUBMIT_TOKEN   = "pgis_token_7c28"; // must match SECRET_TOKEN in Apps Script
 
     // --- Map init ---
@@ -290,9 +292,11 @@
       }
     });
 
-    // Submit to Researcher (Google Apps Script)
+    // Submit to Researcher (Google Apps Script) - text/plain to avoid CORS preflight
     async function submitToResearcher() {
+      if (!navigator.onLine) { alert("You're offline. Please connect and try again."); return; }
       if (submissions.length === 0) { alert("No points to submit yet."); return; }
+
       const payload = {
         token: SUBMIT_TOKEN,
         participant: document.getElementById('pname').value.trim(),
@@ -302,20 +306,27 @@
         features:    submissions,
         userAgent:   navigator.userAgent || ""
       };
+
+      const ctrl = new AbortController();
+      const t = setTimeout(()=>ctrl.abort(), 15000);
       try {
         const res  = await fetch(GAS_WEBAPP_URL, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
+          headers: { "Content-Type": "text/plain;charset=utf-8" }, // avoids preflight
+          body: JSON.stringify(payload),
+          signal: ctrl.signal
         });
-        const data = await res.json();
+        clearTimeout(t);
+        let data={}; try{ data = await res.json(); }catch(_){ }
         if (res.ok) {
+          try{ localStorage.removeItem("pgis_submissions"); }catch(_){ }
           toast("Submitted to researcher. Thank you!");
         } else {
-          alert("Submission error: " + (data.message || res.statusText));
+          alert("Submission error: " + (data.message || res.status + " " + res.statusText));
         }
       } catch (e) {
-        alert("Network error. Please try again when you have connectivity.");
+        if (e.name === 'AbortError') alert('Network timeout. Please try again on a stable connection.');
+        else { alert('Network error. Please try again when you have connectivity.'); console.error(e); }
       }
     }
     document.getElementById('submitBtn').addEventListener('click', submitToResearcher);
