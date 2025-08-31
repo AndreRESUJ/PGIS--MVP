@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PGIS: Abandoned Buildings Reporting – Tshwane Region 3 (MVP)</title>
   <link rel="preconnect" href="https://unpkg.com" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css?v=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css?v=1" />
   <style>
     :root{--bg:#0b1020;--panel:#111831;--card:#1a2342;--text:#e8edf8;--muted:#9fb0d9;--accent:#79b8ff}
     *{box-sizing:border-box}
@@ -43,6 +43,12 @@
     .legend{position:absolute;z-index:500;background:rgba(17,24,49,.9);padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.15);bottom:14px;left:14px;font-size:12px}
     .legend b{color:#cfe1ff}
     .toast{position:fixed;right:12px;bottom:12px;background:#142046;border:1px solid rgba(255,255,255,.18);padding:10px 12px;border-radius:10px;font-size:12px;display:none}
+
+    /* Modal */
+    #modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}
+    #modal .box{background:#111831;border:1px solid rgba(255,255,255,.15);border-radius:14px;max-width:520px;width:92%;padding:18px}
+    #modal h3{margin:0 0 8px 0;color:#e8edf8}
+    #modal p{margin:0 0 12px 0;color:#cfd8ff}
 
     @media (max-width: 820px) {
       .wrap { grid-template-columns: 1fr; }
@@ -125,34 +131,50 @@
     </div>
   </div>
 
+  <!-- Modal -->
+  <div id="modal">
+    <div class="box">
+      <h3 id="modalTitle">Status</h3>
+      <p id="modalMsg"></p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button id="modalClose" class="btn secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Scripts -->
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js?v=1"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js?v=1"></script>
   <script>
+    // === Config ===
     const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwXVjxxP2wWIEsolYSBswjXkKuI4oIpujXx9kzwdgNcer_UIsSHF7Tu7ASlR2tdLThPbQ/exec";
     const SUBMIT_TOKEN   = "pgis_token_7c28";
+    const EXPORT_PASSWORD = "Hydro2025Secure!";
 
-    // --- Globals ---
+    // === Globals ===
     let map, drawn, drawControl;
     const submissions = [];
 
-    // Toast helper
-    const toast=(msg)=>{const t=document.getElementById('toast');t.textContent=msg;t.style.display='block';setTimeout(()=>t.style.display='none',3000)}
+    // === UI helpers ===
+    const toast = (msg) => { const t = document.getElementById('toast'); t.textContent = msg; t.style.display='block'; setTimeout(()=>t.style.display='none', 3200); };
+    function showModal(title, msg){ document.getElementById('modalTitle').textContent = title||'Notice'; document.getElementById('modalMsg').textContent = msg||''; document.getElementById('modal').style.display = 'flex'; }
+    function hideModal(){ document.getElementById('modal').style.display = 'none'; }
+    document.getElementById('modalClose').addEventListener('click', hideModal);
 
-    // Local autosave helpers
-    function saveLocal(){ try{ localStorage.setItem("pgis_submissions", JSON.stringify(submissions)); }catch(_){} }
+    // === Local autosave ===
+    function saveLocal(){ try{ localStorage.setItem('pgis_submissions', JSON.stringify(submissions)); }catch{} }
     function restoreLocal(){
       try{
-        const saved = JSON.parse(localStorage.getItem("pgis_submissions") || "[]");
+        const saved = JSON.parse(localStorage.getItem('pgis_submissions')||'[]');
         if(saved.length && drawn){
-          saved.forEach(f=>{ const [lng,lat]=f.geometry.coordinates; L.marker([lat,lng]).addTo(drawn); });
+          saved.forEach(f => { const [lng,lat] = f.geometry.coordinates; L.marker([lat,lng]).addTo(drawn); });
           submissions.push(...saved);
           toast(`Restored ${saved.length} saved point(s).`);
         }
-      }catch(_){}
+      }catch{}
     }
 
-    // Build popup UI
+    // === Popup form ===
     function popupFormHTML(){
       return `
         <div style="min-width:220px">
@@ -171,54 +193,127 @@
         </div>`;
     }
 
-    // Initialize map after consent
+    // === Map init AFTER consent ===
     function initMapOnce(){
       if(map) return;
-      map = L.map('map').setView([-25.746, 28.190], 12);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+      map = L.map('map', { zoomControl:true });
+      map.setView([-25.746, 28.190], 12); // Tshwane approx
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+
       drawn = new L.FeatureGroup(); map.addLayer(drawn);
-      drawControl = new L.Control.Draw({ draw:{polygon:false,polyline:false,rectangle:false,circle:false,circlemarker:false}, edit:{featureGroup:drawn} });
+      drawControl = new L.Control.Draw({ draw:{ polygon:false, polyline:false, rectangle:false, circle:false, circlemarker:false, marker:{} }, edit:{ featureGroup: drawn } });
       map.addControl(drawControl);
 
-      // Add point
-      document.getElementById('addPoint').addEventListener('click',()=>{
-        new L.Draw.Marker(map).enable(); toast('Click map to add a point');
-      });
+      document.getElementById('addPoint').addEventListener('click', ()=>{ new L.Draw.Marker(map).enable(); toast('Click map to add a point.'); });
+      document.getElementById('locate').addEventListener('click', ()=>{ map.locate({setView:true,maxZoom:17}); setTimeout(()=>map.invalidateSize(true),50); });
 
-      // On draw
-      map.on(L.Draw.Event.CREATED, function(e){
+      map.on(L.Draw.Event.CREATED, (e)=>{
         const layer = e.layer; const latlng = layer.getLatLng();
-        drawn.addLayer(layer); layer.bindPopup(popupFormHTML()); setTimeout(()=>layer.openPopup(),0);
+        drawn.addLayer(layer);
+        layer.bindPopup(popupFormHTML());
+        setTimeout(()=>layer.openPopup(),0);
+
         layer.on('popupopen', ()=>{
-          document.getElementById('savePoint').onclick=()=>{
-            const feature={type:'Feature',geometry:{type:'Point',coordinates:[latlng.lng,latlng.lat]},properties:{ward:document.getElementById('ward').value.trim(),status:document.getElementById('f_status').value,access:document.getElementById('f_access').value,risk:document.getElementById('f_risk').value,notes:document.getElementById('f_notes').value.trim()}};
-            submissions.push(feature); saveLocal(); layer.closePopup(); toast('Point saved');
+          const saveBtn = document.getElementById('savePoint');
+          const cancelBtn = document.getElementById('cancelPoint');
+          if(saveBtn) saveBtn.onclick = ()=>{
+            const feature = {
+              type:'Feature',
+              geometry:{ type:'Point', coordinates:[latlng.lng, latlng.lat] },
+              properties:{
+                participant: document.getElementById('pname').value.trim(),
+                ward: document.getElementById('ward').value.trim(),
+                contact: document.getElementById('contact').value.trim(),
+                sessionNote: document.getElementById('sessionNote').value.trim(),
+                status: document.getElementById('f_status').value,
+                access: document.getElementById('f_access').value,
+                risk: document.getElementById('f_risk').value,
+                notes: document.getElementById('f_notes').value.trim(),
+                created_at: new Date().toISOString()
+              }
+            };
+            submissions.push(feature);
+            saveLocal();
+            layer.closePopup();
+            toast('Point saved.');
           };
-          document.getElementById('cancelPoint').onclick=()=>{drawn.removeLayer(layer);toast('Discarded');};
+          if(cancelBtn) cancelBtn.onclick = ()=>{ drawn.removeLayer(layer); toast('Point discarded.'); };
         });
       });
+
+      window.addEventListener('resize', ()=>map.invalidateSize(true));
+      setTimeout(()=>map.invalidateSize(true),50);
       restoreLocal();
     }
 
-    // Consent flow
-    function showApp(){document.getElementById('consentScreen').style.display='none';document.getElementById('app').style.display='block';initMapOnce();}
-    document.getElementById('startBtn').addEventListener('click',()=>{if(!document.getElementById('consentAgree').checked){alert('Please tick consent');return;}showApp();});
-
-    // Export
-    const EXPORT_PASSWORD="Hydro2025Secure!";
-    document.getElementById('exportBtn').addEventListener('click',()=>{
-      const pwd=prompt('Password?'); if(pwd!==EXPORT_PASSWORD){alert('Denied');return;}
-      const fc={type:'FeatureCollection',features:submissions};
-      const blob=new Blob([JSON.stringify(fc,null,2)],{type:'application/geo+json'});
-      const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url;a.download='data.geojson';a.click();URL.revokeObjectURL(url);
+    // === Consent flow ===
+    function showApp(){ document.getElementById('consentScreen').style.display='none'; document.getElementById('app').style.display='block'; initMapOnce(); }
+    document.getElementById('startBtn').addEventListener('click', ()=>{
+      if(!document.getElementById('consentAgree').checked){ alert('Please check the consent box to continue.'); return; }
+      showApp();
     });
 
-    // Submit
-    document.getElementById('submitBtn').addEventListener('click',async()=>{
-      if(submissions.length===0){alert('No points');return;}
-      const payload={token:SUBMIT_TOKEN,features:submissions};
-      try{const res=await fetch(GAS_WEBAPP_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(payload)});if(res.ok){localStorage.removeItem('pgis_submissions');toast('Thank you! Submitted.');}else alert('Error');}catch(e){alert('Network error');}
+    // === Export (researcher only) ===
+    function isIOS(){ return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1); }
+    document.getElementById('exportBtn').addEventListener('click', ()=>{
+      const pwd = prompt('Enter researcher password to export:');
+      if(pwd !== EXPORT_PASSWORD){ alert('Incorrect password. Export denied.'); return; }
+      if(submissions.length===0){ alert('No data to export.'); return; }
+      const fc = { type:'FeatureCollection', features: submissions };
+      const blob = new Blob([JSON.stringify(fc,null,2)], {type:'application/geo+json'});
+      const url  = URL.createObjectURL(blob);
+      if(isIOS()){
+        window.open(url,'_blank'); setTimeout(()=>URL.revokeObjectURL(url),1000);
+        alert('On iPhone/iPad, use Share → “Save to Files” to keep the .geojson.');
+      } else {
+        const a=document.createElement('a'); a.href=url; a.download='abandoned_buildings.geojson'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+      }
     });
+
+    // === Submit to Researcher (modal + toast) ===
+    document.getElementById('submitBtn').addEventListener('click', submitToResearcher);
+    async function submitToResearcher(){
+      const btn = document.getElementById('submitBtn');
+      if(!navigator.onLine){ showModal('Offline', "You're offline. Please connect and try again."); return; }
+      if(submissions.length===0){ showModal('Nothing to submit', 'Please add at least one point.'); return; }
+
+      const payload = {
+        token: SUBMIT_TOKEN,
+        participant: document.getElementById('pname').value.trim(),
+        ward:        document.getElementById('ward').value.trim(),
+        contact:     document.getElementById('contact').value.trim(),
+        sessionNote: document.getElementById('sessionNote').value.trim(),
+        features:    submissions,
+        userAgent:   navigator.userAgent || ''
+      };
+
+      const original = btn.textContent; btn.disabled = true; btn.textContent = 'Submitting…';
+
+      const ctrl = new AbortController(); const t = setTimeout(()=>ctrl.abort(),15000);
+      try{
+        const res = await fetch(GAS_WEBAPP_URL, {
+          method:'POST',
+          headers:{ 'Content-Type':'text/plain;charset=utf-8' }, // avoids preflight
+          body: JSON.stringify(payload),
+          signal: ctrl.signal
+        });
+        clearTimeout(t);
+        let data={}; try{ data = await res.json(); }catch{}
+        if(res.ok){
+          try{ localStorage.removeItem('pgis_submissions'); }catch{}
+          showModal('Thank you!', 'Your submission has been received and sent to the researcher.');
+          toast('Thank you! Your submission has been received and sent to the researcher.');
+        }else{
+          showModal('Submission error', (data && data.message) ? data.message : `${res.status} ${res.statusText}`);
+        }
+      }catch(e){
+        if(e.name==='AbortError') showModal('Timeout', 'Network timeout. Please try again on a stable connection.');
+        else showModal('Network error', 'Please try again when you have connectivity.');
+        console.error(e);
+      }finally{
+        btn.disabled = false; btn.textContent = original;
+      }
+    }
   </script>
 </body>
 </html>
