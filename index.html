@@ -7,12 +7,12 @@
   <link rel="preconnect" href="https://unpkg.com" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css?v=1" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css?v=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css?v=1" />
   <style>
     :root{--bg:#0b1020;--panel:#111831;--card:#1a2342;--text:#e8edf8;--muted:#9fb0d9;--accent:#79b8ff}
     *{box-sizing:border-box}
     html,body{height:100%}
     body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--text)}
-
     header{padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:12px}
     header h1{font-size:18px;margin:0;letter-spacing:.2px}
     header .badge{font-size:12px;padding:4px 8px;border:1px solid rgba(255,255,255,.15);border-radius:999px;color:var(--muted)}
@@ -63,7 +63,6 @@
   </style>
 </head>
 <body>
-  <!-- Consent Screen -->
   <div id="consentScreen">
     <div id="consentBox">
       <h2>Participant Information and Consent</h2>
@@ -76,7 +75,6 @@
     </div>
   </div>
 
-  <!-- Main App -->
   <div id="app">
     <header>
       <h1>PGIS: Abandoned Buildings Reporter</h1>
@@ -105,7 +103,7 @@
         <div class="card">
           <div class="pill">Add a building</div>
           <ol class="muted">
-            <li>Click <span class="hl">Add point</span>, then click the map to drop a pin on the building.</li>
+            <li>Click <span class="hl">Add point</span> below, then click the map to drop a pin on the building.</li>
             <li>Fill in the popup form (status, access, risk, notes) and save.</li>
             <li>Repeat for multiple buildings.</li>
           </ol>
@@ -125,67 +123,74 @@
 
       <main>
         <div id="map"></div>
-        <div class="legend">↳ <b>How to use:</b> Click <i>Add point</i> → click map → fill popup → Save.</div>
+        <div class="legend">↳ <b>How to use:</b> Click <i>Add point</i> → click map → fill popup → Save. Use the layer control (top-right) to switch between <i>Street</i>, <i>Satellite</i>, and <i>Hybrid</i> views, and toggle <i>Labels</i> or <i>Transport</i> overlays.</div>
         <div id="toast" class="toast"></div>
       </main>
     </div>
   </div>
 
-  <!-- Modal -->
-  <div id="modal">
-    <div class="box">
-      <h3 id="modalTitle">Status</h3>
-      <p id="modalMsg"></p>
+  <!-- Modal for submission confirmation -->
+  <div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:#111831;border:1px solid rgba(255,255,255,.15);border-radius:14px;max-width:520px;width:92%;padding:18px;">
+      <h3 id="modalTitle" style="margin:0 0 8px 0;color:#e8edf8;">Status</h3>
+      <p id="modalMsg" style="margin:0 0 12px 0;color:#cfd8ff;"></p>
       <div style="display:flex;gap:8px;justify-content:flex-end;">
         <button id="modalClose" class="btn secondary">Close</button>
       </div>
     </div>
   </div>
 
-  <!-- Scripts -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js?v=1"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js?v=1"></script>
+  <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js?v=1"></script>
   <script>
-    // === Config ===
     const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwXVjxxP2wWIEsolYSBswjXkKuI4oIpujXx9kzwdgNcer_UIsSHF7Tu7ASlR2tdLThPbQ/exec";
     const SUBMIT_TOKEN   = "pgis_token_7c28";
-    const EXPORT_PASSWORD = "Hydro2025Secure!";
 
-    // === Globals ===
     let map, drawn, drawControl;
     const submissions = [];
 
-    // === UI helpers ===
-    const toast = (msg) => { const t = document.getElementById('toast'); t.textContent = msg; t.style.display='block'; setTimeout(()=>t.style.display='none', 3200); };
-    function showModal(title, msg){ document.getElementById('modalTitle').textContent = title||'Notice'; document.getElementById('modalMsg').textContent = msg||''; document.getElementById('modal').style.display = 'flex'; }
-    function hideModal(){ document.getElementById('modal').style.display = 'none'; }
-    document.getElementById('modalClose').addEventListener('click', hideModal);
+    const toast=(msg)=>{const t=document.getElementById('toast');t.textContent=msg;t.style.display='block';setTimeout(()=>t.style.display='none',3000)}
 
-    // === Local autosave ===
-    function saveLocal(){ try{ localStorage.setItem('pgis_submissions', JSON.stringify(submissions)); }catch{} }
+    function saveLocal(){ try{ localStorage.setItem("pgis_submissions", JSON.stringify(submissions)); }catch(_){} }
     function restoreLocal(){
       try{
-        const saved = JSON.parse(localStorage.getItem('pgis_submissions')||'[]');
+        const saved = JSON.parse(localStorage.getItem("pgis_submissions") || "[]");
         if(saved.length && drawn){
-          saved.forEach(f => { const [lng,lat] = f.geometry.coordinates; L.marker([lat,lng]).addTo(drawn); });
+          saved.forEach(f=>{ const [lng,lat]=f.geometry.coordinates; L.marker([lat,lng]).addTo(drawn); });
           submissions.push(...saved);
-          toast(`Restored ${saved.length} saved point(s).`);
+          toast(`Restored ${saved.length} saved point(s) on this device.`);
         }
-      }catch{}
+      }catch(_){}
     }
 
-    // === Popup form ===
-    function popupFormHTML(){
+    function popupFormHTML(defaults={}){
+      const d = Object.assign({status:'Abandoned',access:'Unknown',risk:'Unknown',notes:''}, defaults);
       return `
         <div style="min-width:220px">
-          <label>Status</label>
-          <select id="f_status"><option>Abandoned</option><option>Vacant</option><option>Underutilised</option><option>Other</option></select>
-          <label>Access</label>
-          <select id="f_access"><option>Unknown</option><option>Open</option><option>Fenced</option><option>Guarded</option></select>
-          <label>Risk</label>
-          <select id="f_risk"><option>Unknown</option><option>Low</option><option>Medium</option><option>High</option></select>
-          <label>Notes</label>
-          <textarea id="f_notes" placeholder="Add details..."></textarea>
+          <label style="display:block;font-size:12px;color:#9fb0d9;margin:4px 0">Building status</label>
+          <select id="f_status">
+            <option ${d.status==='Abandoned'?'selected':''}>Abandoned</option>
+            <option ${d.status==='Vacant'?'selected':''}>Vacant</option>
+            <option ${d.status==='Underutilised'?'selected':''}>Underutilised</option>
+            <option ${d.status==='Other'?'selected':''}>Other</option>
+          </select>
+          <label style="display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px">Access</label>
+          <select id="f_access">
+            <option ${d.access==='Unknown'?'selected':''}>Unknown</option>
+            <option ${d.access==='Open'?'selected':''}>Open</option>
+            <option ${d.access==='Fenced'?'selected':''}>Fenced</option>
+            <option ${d.access==='Guarded'?'selected':''}>Guarded</option>
+          </select>
+          <label style="display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px">Apparent risk</label>
+          <select id="f_risk">
+            <option ${d.risk==='Unknown'?'selected':''}>Unknown</option>
+            <option ${d.risk==='Low'?'selected':''}>Low</option>
+            <option ${d.risk==='Medium'?'selected':''}>Medium</option>
+            <option ${d.risk==='High'?'selected':''}>High</option>
+          </select>
+          <label style="display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px">Notes</label>
+          <textarea id="f_notes" placeholder="Add any details...">${d.notes||''}</textarea>
           <div style="display:flex;gap:8px;margin-top:8px">
             <button id="savePoint" class="btn" style="flex:1">Save</button>
             <button id="cancelPoint" class="btn secondary" style="flex:1">Cancel</button>
@@ -193,67 +198,119 @@
         </div>`;
     }
 
-    // === Map init AFTER consent ===
+    function addBaseAndOverlayLayers(map){
+      // --- Basemaps ---
+      const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:20, attribution:'&copy; OpenStreetMap contributors'});
+      const carto = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', {maxZoom:20, attribution:'&copy; OpenStreetMap & CARTO'});
+      const esriStreets = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {maxZoom:20, attribution:'Tiles &copy; Esri'});
+      const esriImagery = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxZoom:20, attribution:'Imagery &copy; Esri'});
+      const esriGray = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {maxZoom:20, attribution:'&copy; Esri'});
+
+      // --- Overlays (labels & transport) ---
+      const esriLabels = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {maxZoom:20, attribution:'&copy; Esri'});
+      const esriTransport = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', {maxZoom:20, attribution:'&copy; Esri'});
+
+      // Default = Street (Carto) with transport overlay for clarity
+      carto.addTo(map);
+      esriTransport.addTo(map);
+
+      const baseLayers = {
+        'Street (OSM)': osm,
+        'Street (Carto Voyager)': carto,
+        'Street (Esri)': esriStreets,
+        'Gray (Esri)': esriGray,
+        'Satellite (Esri Imagery)': esriImagery
+      };
+      const overlays = {
+        'Labels (Esri)': esriLabels,
+        'Transport (Esri)': esriTransport
+      };
+
+      L.control.layers(baseLayers, overlays, {collapsed:false}).addTo(map);
+      L.control.scale({metric:true, imperial:false}).addTo(map);
+
+      // Hybrid hint: if user switches to Satellite, suggest enabling Labels.
+      map.on('baselayerchange', (e)=>{
+        if(e.name.includes('Satellite')){ toast('Tip: Toggle "Labels (Esri)" for a hybrid view.'); }
+      });
+    }
+
     function initMapOnce(){
       if(map) return;
-      map = L.map('map', { zoomControl:true });
-      map.setView([-25.746, 28.190], 12); // Tshwane approx
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+      map = L.map('map', { zoomControl: true });
+      map.setView([-25.746, 28.190], 13);
 
-      drawn = new L.FeatureGroup(); map.addLayer(drawn);
-      drawControl = new L.Control.Draw({ draw:{ polygon:false, polyline:false, rectangle:false, circle:false, circlemarker:false, marker:{} }, edit:{ featureGroup: drawn } });
+      // Basemaps + overlays + controls
+      addBaseAndOverlayLayers(map);
+
+      // Geocoder (address/POI search). Places a marker and zooms to result
+      L.Control.geocoder({ defaultMarkGeocode:false })
+        .on('markgeocode', function(e){
+          const c = e.geocode.center; const m = L.marker(c).addTo(map).bindPopup(e.geocode.name);
+          map.fitBounds(e.geocode.bbox, {maxZoom:18}); m.openPopup();
+        })
+        .addTo(map);
+
+      drawn = new L.FeatureGroup();
+      map.addLayer(drawn);
+
+      drawControl = new L.Control.Draw({
+        draw:{ polygon:false, polyline:false, rectangle:false, circle:false, circlemarker:false, marker:{ title:'Add abandoned building point' } },
+        edit:{ featureGroup: drawn }
+      });
       map.addControl(drawControl);
 
-      document.getElementById('addPoint').addEventListener('click', ()=>{ new L.Draw.Marker(map).enable(); toast('Click map to add a point.'); });
-      document.getElementById('locate').addEventListener('click', ()=>{ map.locate({setView:true,maxZoom:17}); setTimeout(()=>map.invalidateSize(true),50); });
+      document.getElementById('addPoint').addEventListener('click', ()=>{
+        new L.Draw.Marker(map, drawControl.options.draw.marker).enable();
+        toast('Click the map to place a point…');
+      });
+      document.getElementById('locate').addEventListener('click', ()=>{ map.locate({setView:true, maxZoom:17}); setTimeout(()=>map.invalidateSize(true),50); });
 
-      map.on(L.Draw.Event.CREATED, (e)=>{
+      map.on(L.Draw.Event.CREATED, function(e){
         const layer = e.layer; const latlng = layer.getLatLng();
         drawn.addLayer(layer);
         layer.bindPopup(popupFormHTML());
         setTimeout(()=>layer.openPopup(),0);
-
         layer.on('popupopen', ()=>{
-          const saveBtn = document.getElementById('savePoint');
-          const cancelBtn = document.getElementById('cancelPoint');
-          if(saveBtn) saveBtn.onclick = ()=>{
-            const feature = {
-              type:'Feature',
-              geometry:{ type:'Point', coordinates:[latlng.lng, latlng.lat] },
-              properties:{
-                participant: document.getElementById('pname').value.trim(),
-                ward: document.getElementById('ward').value.trim(),
-                contact: document.getElementById('contact').value.trim(),
-                sessionNote: document.getElementById('sessionNote').value.trim(),
-                status: document.getElementById('f_status').value,
-                access: document.getElementById('f_access').value,
-                risk: document.getElementById('f_risk').value,
-                notes: document.getElementById('f_notes').value.trim(),
-                created_at: new Date().toISOString()
-              }
-            };
-            submissions.push(feature);
-            saveLocal();
-            layer.closePopup();
-            toast('Point saved.');
+          const saveBtn=document.getElementById('savePoint');
+          const cancelBtn=document.getElementById('cancelPoint');
+          if(saveBtn) saveBtn.onclick=()=>{
+            const feature = { type:'Feature', geometry:{ type:'Point', coordinates:[latlng.lng, latlng.lat] }, properties:{ participant:document.getElementById('pname').value.trim(), ward:document.getElementById('ward').value.trim(), contact:document.getElementById('contact').value.trim(), sessionNote:document.getElementById('sessionNote').value.trim(), status:document.getElementById('f_status').value, access:document.getElementById('f_access').value, risk:document.getElementById('f_risk').value, notes:document.getElementById('f_notes').value.trim(), created_at:new Date().toISOString() } };
+            submissions.push(feature); saveLocal(); layer.closePopup(); toast('Point saved.');
           };
-          if(cancelBtn) cancelBtn.onclick = ()=>{ drawn.removeLayer(layer); toast('Point discarded.'); };
+          if(cancelBtn) cancelBtn.onclick=()=>{ drawn.removeLayer(layer); toast('Point discarded'); };
         });
       });
 
       window.addEventListener('resize', ()=>map.invalidateSize(true));
-      setTimeout(()=>map.invalidateSize(true),50);
+      setTimeout(()=>map.invalidateSize(true), 50);
       restoreLocal();
     }
 
-    // === Consent flow ===
-    function showApp(){ document.getElementById('consentScreen').style.display='none'; document.getElementById('app').style.display='block'; initMapOnce(); }
-    document.getElementById('startBtn').addEventListener('click', ()=>{
-      if(!document.getElementById('consentAgree').checked){ alert('Please check the consent box to continue.'); return; }
-      showApp();
+    function showApp(){
+      document.getElementById('consentScreen').style.display='none';
+      document.getElementById('app').style.display='block';
+      initMapOnce();
+    }
+
+    window.addEventListener('DOMContentLoaded', ()=>{
+      document.getElementById('startBtn').addEventListener('click', ()=>{
+        if(!document.getElementById('consentAgree').checked){ alert('Please check the consent box to continue.'); return; }
+        showApp();
+      });
     });
 
-    // === Export (researcher only) ===
+    // Modal helpers
+    function showModal(title, msg){
+      document.getElementById('modalTitle').textContent = title || 'Notice';
+      document.getElementById('modalMsg').textContent = msg || '';
+      document.getElementById('modal').style.display = 'flex';
+    }
+    function hideModal(){ document.getElementById('modal').style.display = 'none'; }
+    document.getElementById('modalClose').addEventListener('click', hideModal);
+
+    // Export (researcher only)
+    const EXPORT_PASSWORD = "Hydro2025Secure!";
     function isIOS(){ return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1); }
     document.getElementById('exportBtn').addEventListener('click', ()=>{
       const pwd = prompt('Enter researcher password to export:');
@@ -261,58 +318,34 @@
       if(submissions.length===0){ alert('No data to export.'); return; }
       const fc = { type:'FeatureCollection', features: submissions };
       const blob = new Blob([JSON.stringify(fc,null,2)], {type:'application/geo+json'});
-      const url  = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(blob);
       if(isIOS()){
-        window.open(url,'_blank'); setTimeout(()=>URL.revokeObjectURL(url),1000);
-        alert('On iPhone/iPad, use Share → “Save to Files” to keep the .geojson.');
+        window.open(url, '_blank'); setTimeout(()=>URL.revokeObjectURL(url),1000);
+        alert('On iPhone/iPad, use the Share button → "Save to Files" to keep the .geojson.');
       } else {
         const a=document.createElement('a'); a.href=url; a.download='abandoned_buildings.geojson'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
       }
     });
 
-    // === Submit to Researcher (modal + toast) ===
+    // Submit to Researcher (modal + toast)
     document.getElementById('submitBtn').addEventListener('click', submitToResearcher);
     async function submitToResearcher(){
       const btn = document.getElementById('submitBtn');
       if(!navigator.onLine){ showModal('Offline', "You're offline. Please connect and try again."); return; }
       if(submissions.length===0){ showModal('Nothing to submit', 'Please add at least one point.'); return; }
 
-      const payload = {
-        token: SUBMIT_TOKEN,
-        participant: document.getElementById('pname').value.trim(),
-        ward:        document.getElementById('ward').value.trim(),
-        contact:     document.getElementById('contact').value.trim(),
-        sessionNote: document.getElementById('sessionNote').value.trim(),
-        features:    submissions,
-        userAgent:   navigator.userAgent || ''
-      };
+      const payload = { token: SUBMIT_TOKEN, participant: document.getElementById('pname').value.trim(), ward: document.getElementById('ward').value.trim(), contact: document.getElementById('contact').value.trim(), sessionNote: document.getElementById('sessionNote').value.trim(), features: submissions, userAgent: navigator.userAgent || '' };
 
       const original = btn.textContent; btn.disabled = true; btn.textContent = 'Submitting…';
-
       const ctrl = new AbortController(); const t = setTimeout(()=>ctrl.abort(),15000);
       try{
-        const res = await fetch(GAS_WEBAPP_URL, {
-          method:'POST',
-          headers:{ 'Content-Type':'text/plain;charset=utf-8' }, // avoids preflight
-          body: JSON.stringify(payload),
-          signal: ctrl.signal
-        });
+        const res = await fetch(GAS_WEBAPP_URL, { method:'POST', headers:{ 'Content-Type':'text/plain;charset=utf-8' }, body: JSON.stringify(payload), signal: ctrl.signal });
         clearTimeout(t);
         let data={}; try{ data = await res.json(); }catch{}
-        if(res.ok){
-          try{ localStorage.removeItem('pgis_submissions'); }catch{}
-          showModal('Thank you!', 'Your submission has been received and sent to the researcher.');
-          toast('Thank you! Your submission has been received and sent to the researcher.');
-        }else{
-          showModal('Submission error', (data && data.message) ? data.message : `${res.status} ${res.statusText}`);
-        }
-      }catch(e){
-        if(e.name==='AbortError') showModal('Timeout', 'Network timeout. Please try again on a stable connection.');
-        else showModal('Network error', 'Please try again when you have connectivity.');
-        console.error(e);
-      }finally{
-        btn.disabled = false; btn.textContent = original;
-      }
+        if(res.ok){ try{ localStorage.removeItem('pgis_submissions'); }catch{}; showModal('Thank you!', 'Your submission has been received and sent to the researcher.'); toast('Thank you! Submission sent.'); }
+        else { showModal('Submission error', (data && data.message) ? data.message : `${res.status} ${res.statusText}`); }
+      }catch(e){ if(e.name==='AbortError') showModal('Timeout', 'Network timeout. Please try again.'); else showModal('Network error', 'Please try again when you have connectivity.'); console.error(e); }
+      finally{ btn.disabled = false; btn.textContent = original; }
     }
   </script>
 </body>
