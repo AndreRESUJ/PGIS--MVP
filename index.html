@@ -13,6 +13,7 @@
     *{box-sizing:border-box}
     html,body{height:100%}
     body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--text)}
+
     header{padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:12px}
     header h1{font-size:18px;margin:0;letter-spacing:.2px}
     header .badge{font-size:12px;padding:4px 8px;border:1px solid rgba(255,255,255,.15);border-radius:999px;color:var(--muted)}
@@ -44,6 +45,10 @@
     .legend b{color:#cfe1ff}
     .toast{position:fixed;right:12px;bottom:12px;background:#142046;border:1px solid rgba(255,255,255,.18);padding:10px 12px;border-radius:10px;font-size:12px;display:none}
 
+    /* Opacity slider control */
+    .opacity-ctl{position:absolute;top:10px;left:10px;z-index:600;background:rgba(17,24,49,.9);padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.15);font-size:12px}
+    .opacity-ctl input{width:140px}
+
     /* Modal */
     #modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center}
     #modal .box{background:#111831;border:1px solid rgba(255,255,255,.15);border-radius:14px;max-width:520px;width:92%;padding:18px}
@@ -58,6 +63,7 @@
       header h1 { font-size: 16px; }
       input, select, textarea, .btn { font-size: 16px; }
       .btn { padding: 12px 14px; border-radius: 12px; }
+      .opacity-ctl { left: 8px; right: auto; }
     }
     #exportBtn { margin-bottom: 12px; }
   </style>
@@ -104,7 +110,7 @@
           <div class="pill">Add a building</div>
           <ol class="muted">
             <li>Click <span class="hl">Add point</span> below, then click the map to drop a pin on the building.</li>
-            <li>Fill in the popup form (status, access, risk, notes) and save.</li>
+            <li>Fill in the popup form (status, access, risk, notes). <b>Address will auto-fill</b> if possible.</li>
             <li>Repeat for multiple buildings.</li>
           </ol>
           <div class="row">
@@ -123,13 +129,15 @@
 
       <main>
         <div id="map"></div>
-        <div class="legend">↳ <b>How to use:</b> Click <i>Add point</i> → click map → fill popup → Save. Use the layer control (top-right) to switch between <i>Street</i>, <i>Satellite</i>, and <i>Hybrid</i> views, and toggle <i>Labels</i> or <i>Transport</i> overlays.</div>
+        <div class="opacity-ctl">Basemap opacity
+          <input id="opacityRange" type="range" min="40" max="100" value="100" />
+        </div>
+        <div class="legend">↳ <b>How to use:</b> Click <i>Add point</i> → click map → fill popup → Save. Use the layer control (top-right) to switch between <i>Street</i>, <i>Satellite</i>, and <i>Hybrid</i> views, and toggle <i>Labels</i> or <i>Transport</i> overlays. Use the opacity slider for clarity.</div>
         <div id="toast" class="toast"></div>
       </main>
     </div>
   </div>
 
-  <!-- Modal for submission confirmation -->
   <div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center;">
     <div style="background:#111831;border:1px solid rgba(255,255,255,.15);border-radius:14px;max-width:520px;width:92%;padding:18px;">
       <h3 id="modalTitle" style="margin:0 0 8px 0;color:#e8edf8;">Status</h3>
@@ -143,11 +151,13 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js?v=1"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js?v=1"></script>
   <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js?v=1"></script>
+  <script src="https://cdn.osmbuildings.org/OSMBuildings-Leaflet.js"></script>
   <script>
     const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwXVjxxP2wWIEsolYSBswjXkKuI4oIpujXx9kzwdgNcer_UIsSHF7Tu7ASlR2tdLThPbQ/exec";
     const SUBMIT_TOKEN   = "pgis_token_7c28";
 
     let map, drawn, drawControl;
+    let currentBase = null; // track current base for opacity
     const submissions = [];
 
     const toast=(msg)=>{const t=document.getElementById('toast');t.textContent=msg;t.style.display='block';setTimeout(()=>t.style.display='none',3000)}
@@ -165,53 +175,62 @@
     }
 
     function popupFormHTML(defaults={}){
-      const d = Object.assign({status:'Abandoned',access:'Unknown',risk:'Unknown',notes:''}, defaults);
+      const d = Object.assign({status:'Abandoned',access:'Unknown',risk:'Unknown',notes:'',address:''}, defaults);
       return `
-        <div style="min-width:220px">
-          <label style="display:block;font-size:12px;color:#9fb0d9;margin:4px 0">Building status</label>
-          <select id="f_status">
+        <div style=\"min-width:240px\">
+          <label style=\"display:block;font-size:12px;color:#9fb0d9;margin:4px 0\">Detected address</label>
+          <input id=\"f_address\" value=\"${(d.address||'').replace(/"/g,'&quot;')}\" placeholder=\"(will auto-fill)\" />
+          <label style=\"display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px\">Building status</label>
+          <select id=\"f_status\">
             <option ${d.status==='Abandoned'?'selected':''}>Abandoned</option>
             <option ${d.status==='Vacant'?'selected':''}>Vacant</option>
             <option ${d.status==='Underutilised'?'selected':''}>Underutilised</option>
             <option ${d.status==='Other'?'selected':''}>Other</option>
           </select>
-          <label style="display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px">Access</label>
-          <select id="f_access">
+          <label style=\"display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px\">Access</label>
+          <select id=\"f_access\">
             <option ${d.access==='Unknown'?'selected':''}>Unknown</option>
             <option ${d.access==='Open'?'selected':''}>Open</option>
             <option ${d.access==='Fenced'?'selected':''}>Fenced</option>
             <option ${d.access==='Guarded'?'selected':''}>Guarded</option>
           </select>
-          <label style="display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px">Apparent risk</label>
-          <select id="f_risk">
+          <label style=\"display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px\">Apparent risk</label>
+          <select id=\"f_risk\">
             <option ${d.risk==='Unknown'?'selected':''}>Unknown</option>
             <option ${d.risk==='Low'?'selected':''}>Low</option>
             <option ${d.risk==='Medium'?'selected':''}>Medium</option>
             <option ${d.risk==='High'?'selected':''}>High</option>
           </select>
-          <label style="display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px">Notes</label>
-          <textarea id="f_notes" placeholder="Add any details...">${d.notes||''}</textarea>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button id="savePoint" class="btn" style="flex:1">Save</button>
-            <button id="cancelPoint" class="btn secondary" style="flex:1">Cancel</button>
+          <label style=\"display:block;font-size:12px;color:#9fb0d9;margin:6px 0 4px\">Notes</label>
+          <textarea id=\"f_notes\" placeholder=\"Add any details...\">${d.notes||''}</textarea>
+          <div style=\"display:flex;gap:8px;margin-top:8px\">
+            <button id=\"savePoint\" class=\"btn\" style=\"flex:1\">Save</button>
+            <button id=\"cancelPoint\" class=\"btn secondary\" style=\"flex:1\">Cancel</button>
           </div>
         </div>`;
     }
 
+    async function reverseGeocode(lat,lng){
+      try{
+        const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`;
+        const res = await fetch(url, {headers:{'Accept':'application/json'}});
+        if(!res.ok) return '';
+        const j = await res.json();
+        return j.display_name || '';
+      }catch(_){ return ''; }
+    }
+
     function addBaseAndOverlayLayers(map){
-      // --- Basemaps ---
       const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:20, attribution:'&copy; OpenStreetMap contributors'});
       const carto = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', {maxZoom:20, attribution:'&copy; OpenStreetMap & CARTO'});
       const esriStreets = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {maxZoom:20, attribution:'Tiles &copy; Esri'});
       const esriImagery = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxZoom:20, attribution:'Imagery &copy; Esri'});
       const esriGray = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {maxZoom:20, attribution:'&copy; Esri'});
 
-      // --- Overlays (labels & transport) ---
       const esriLabels = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {maxZoom:20, attribution:'&copy; Esri'});
       const esriTransport = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', {maxZoom:20, attribution:'&copy; Esri'});
 
-      // Default = Street (Carto) with transport overlay for clarity
-      carto.addTo(map);
+      currentBase = carto.addTo(map);
       esriTransport.addTo(map);
 
       const baseLayers = {
@@ -226,29 +245,25 @@
         'Transport (Esri)': esriTransport
       };
 
-      L.control.layers(baseLayers, overlays, {collapsed:false}).addTo(map);
+      const ctl = L.control.layers(baseLayers, overlays, {collapsed:false}).addTo(map);
       L.control.scale({metric:true, imperial:false}).addTo(map);
 
-      // Hybrid hint: if user switches to Satellite, suggest enabling Labels.
-      map.on('baselayerchange', (e)=>{
-        if(e.name.includes('Satellite')){ toast('Tip: Toggle "Labels (Esri)" for a hybrid view.'); }
-      });
+      map.on('baselayerchange', (e)=>{ currentBase = e.layer; if(e.name.includes('Satellite')){ toast('Tip: Toggle "Labels (Esri)" for a hybrid view.'); } updateOpacityFromSlider(); });
     }
 
     function initMapOnce(){
       if(map) return;
       map = L.map('map', { zoomControl: true });
-      map.setView([-25.746, 28.190], 13);
+      map.setView([-25.746, 28.190], 15);
 
-      // Basemaps + overlays + controls
       addBaseAndOverlayLayers(map);
 
-      // Geocoder (address/POI search). Places a marker and zooms to result
+      // 3D Building footprints (OSM Buildings) – graceful fallback on mobile/low-power
+      try{ const osmb = new OSMBuildings(map); osmb.load(); }catch(e){ console.warn('OSMBuildings not available', e); }
+
+      // Geocoder (address/POI search)
       L.Control.geocoder({ defaultMarkGeocode:false })
-        .on('markgeocode', function(e){
-          const c = e.geocode.center; const m = L.marker(c).addTo(map).bindPopup(e.geocode.name);
-          map.fitBounds(e.geocode.bbox, {maxZoom:18}); m.openPopup();
-        })
+        .on('markgeocode', function(e){ const c = e.geocode.center; const m = L.marker(c).addTo(map).bindPopup(e.geocode.name); map.fitBounds(e.geocode.bbox, {maxZoom:18}); m.openPopup(); })
         .addTo(map);
 
       drawn = new L.FeatureGroup();
@@ -260,56 +275,57 @@
       });
       map.addControl(drawControl);
 
-      document.getElementById('addPoint').addEventListener('click', ()=>{
-        new L.Draw.Marker(map, drawControl.options.draw.marker).enable();
-        toast('Click the map to place a point…');
-      });
-      document.getElementById('locate').addEventListener('click', ()=>{ map.locate({setView:true, maxZoom:17}); setTimeout(()=>map.invalidateSize(true),50); });
+      document.getElementById('addPoint').addEventListener('click', ()=>{ new L.Draw.Marker(map, drawControl.options.draw.marker).enable(); toast('Tap the map to place a point…'); });
+      document.getElementById('locate').addEventListener('click', ()=>{ map.locate({setView:true, maxZoom:18}); setTimeout(()=>map.invalidateSize(true),50); });
 
-      map.on(L.Draw.Event.CREATED, function(e){
+      map.on(L.Draw.Event.CREATED, async function(e){
         const layer = e.layer; const latlng = layer.getLatLng();
         drawn.addLayer(layer);
-        layer.bindPopup(popupFormHTML());
+        // Preload address into popup via reverse geocoding
+        let addr = await reverseGeocode(latlng.lat, latlng.lng);
+        layer.bindPopup(popupFormHTML({address:addr}));
         setTimeout(()=>layer.openPopup(),0);
+
         layer.on('popupopen', ()=>{
           const saveBtn=document.getElementById('savePoint');
           const cancelBtn=document.getElementById('cancelPoint');
           if(saveBtn) saveBtn.onclick=()=>{
-            const feature = { type:'Feature', geometry:{ type:'Point', coordinates:[latlng.lng, latlng.lat] }, properties:{ participant:document.getElementById('pname').value.trim(), ward:document.getElementById('ward').value.trim(), contact:document.getElementById('contact').value.trim(), sessionNote:document.getElementById('sessionNote').value.trim(), status:document.getElementById('f_status').value, access:document.getElementById('f_access').value, risk:document.getElementById('f_risk').value, notes:document.getElementById('f_notes').value.trim(), created_at:new Date().toISOString() } };
+            const participant = document.getElementById('pname').value.trim();
+            const ward        = document.getElementById('ward').value.trim();
+            const contact     = document.getElementById('contact').value.trim();
+            const sessionNote = document.getElementById('sessionNote').value.trim();
+            const status      = document.getElementById('f_status').value;
+            const access      = document.getElementById('f_access').value;
+            const risk        = document.getElementById('f_risk').value;
+            const notes       = document.getElementById('f_notes').value.trim();
+            const address     = document.getElementById('f_address').value.trim();
+            const feature = { type:'Feature', geometry:{ type:'Point', coordinates:[latlng.lng, latlng.lat] }, properties:{ participant, ward, contact, sessionNote, status, access, risk, notes, address, created_at:new Date().toISOString() } };
             submissions.push(feature); saveLocal(); layer.closePopup(); toast('Point saved.');
           };
           if(cancelBtn) cancelBtn.onclick=()=>{ drawn.removeLayer(layer); toast('Point discarded'); };
         });
       });
 
+      // Opacity slider handler
+      document.getElementById('opacityRange').addEventListener('input', updateOpacityFromSlider);
+      function updateOpacityFromSlider(){
+        if(!currentBase || !currentBase.setOpacity) return; // some layers may not support
+        const val = Number(document.getElementById('opacityRange').value) / 100; // 0.4 - 1.0
+        currentBase.setOpacity(val);
+      }
+
       window.addEventListener('resize', ()=>map.invalidateSize(true));
       setTimeout(()=>map.invalidateSize(true), 50);
       restoreLocal();
     }
 
-    function showApp(){
-      document.getElementById('consentScreen').style.display='none';
-      document.getElementById('app').style.display='block';
-      initMapOnce();
-    }
+    function showApp(){ document.getElementById('consentScreen').style.display='none'; document.getElementById('app').style.display='block'; initMapOnce(); }
+    window.addEventListener('DOMContentLoaded', ()=>{ document.getElementById('startBtn').addEventListener('click', ()=>{ if(!document.getElementById('consentAgree').checked){ alert('Please check the consent box to continue.'); return; } showApp(); }); });
 
-    window.addEventListener('DOMContentLoaded', ()=>{
-      document.getElementById('startBtn').addEventListener('click', ()=>{
-        if(!document.getElementById('consentAgree').checked){ alert('Please check the consent box to continue.'); return; }
-        showApp();
-      });
-    });
-
-    // Modal helpers
-    function showModal(title, msg){
-      document.getElementById('modalTitle').textContent = title || 'Notice';
-      document.getElementById('modalMsg').textContent = msg || '';
-      document.getElementById('modal').style.display = 'flex';
-    }
+    function showModal(title, msg){ document.getElementById('modalTitle').textContent = title || 'Notice'; document.getElementById('modalMsg').textContent = msg || ''; document.getElementById('modal').style.display = 'flex'; }
     function hideModal(){ document.getElementById('modal').style.display = 'none'; }
     document.getElementById('modalClose').addEventListener('click', hideModal);
 
-    // Export (researcher only)
     const EXPORT_PASSWORD = "Hydro2025Secure!";
     function isIOS(){ return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1); }
     document.getElementById('exportBtn').addEventListener('click', ()=>{
@@ -327,7 +343,6 @@
       }
     });
 
-    // Submit to Researcher (modal + toast)
     document.getElementById('submitBtn').addEventListener('click', submitToResearcher);
     async function submitToResearcher(){
       const btn = document.getElementById('submitBtn');
