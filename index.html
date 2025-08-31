@@ -63,7 +63,7 @@
       <p><b>Purpose of study:</b> Mapping abandoned/vacant/underutilised buildings in Tshwane to assess the feasibility of inner-city hydroponics for food security.</p>
       <p><b>Voluntary participation:</b> You may withdraw at any time. Provide only information you are comfortable sharing.</p>
       <p><b>Confidentiality:</b> Name/contact are optional. Data is anonymised in reporting.</p>
-      <p><b>Data handling:</b> Data you enter stays in this browser until the researcher exports it. Participants cannot export.</p>
+      <p><b>Data handling:</b> Data you enter stays in this browser until the researcher exports or submits it. Participants cannot export.</p>
       <label><input type="checkbox" id="consentAgree"> I have read and consent to participate.</label><br>
       <button id="startBtn" class="btn">Proceed to Map</button>
     </div>
@@ -109,9 +109,10 @@
         </div>
 
         <div class="card">
-          <div class="pill">Export (researcher only)</div>
-          <p class="muted">Export requires researcher password.</p>
-          <button id="exportBtn" class="btn full">⬇️ Export Data (GeoJSON)</button>
+          <div class="pill">Export / Submit</div>
+          <p class="muted">Export requires researcher password. "Submit" sends your data securely to the researcher.</p>
+          <button id="exportBtn" class="btn full">⬇️ Export Data (GeoJSON, researcher only)</button>
+          <button id="submitBtn" class="btn full">📨 Submit to Researcher</button>
         </div>
       </aside>
 
@@ -126,6 +127,10 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script>
+    // ===== Submissions endpoint (Google Apps Script) =====
+    const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwXVjxxP2wWIEsolYSBswjXkKuI4oIpujXx9kzwdgNcer_UIsSHF7Tu7ASlR2tdLThPbQ/exec"; // provided by Andre
+    const SUBMIT_TOKEN   = "pgis_token_7c28"; // must match SECRET_TOKEN in Apps Script
+
     // --- Map init ---
     const map = L.map('map', { zoomControl: true });
     const start = L.latLng(-25.746, 28.190); // Tshwane CBD approx
@@ -195,8 +200,19 @@
         </div>`;
     }
 
-    // Data store
+    // Data store + local autosave
     const submissions = [];
+    function saveLocal(){ try{ localStorage.setItem("pgis_submissions", JSON.stringify(submissions)); }catch(_){} }
+    (function restoreLocal(){
+      try{
+        const saved = JSON.parse(localStorage.getItem("pgis_submissions") || "[]");
+        if(saved.length){
+          saved.forEach(f=>{ const [lng,lat]=f.geometry.coordinates; const layer=L.marker([lat,lng]); drawn.addLayer(layer); });
+          submissions.push(...saved);
+          toast(`Restored ${saved.length} saved point(s) on this device.`);
+        }
+      }catch(_){}
+    })();
 
     // Controls
     document.getElementById('addPoint').addEventListener('click', ()=>{
@@ -208,22 +224,27 @@
       setTimeout(()=>map.invalidateSize(true), 50);
     });
 
-    // On marker created
+    // On marker created (add to map first, then open popup)
     map.on(L.Draw.Event.CREATED, function (e) {
-      const layer = e.layer;
+      const layer  = e.layer;
       const latlng = layer.getLatLng();
-      layer.bindPopup(popupFormHTML()).openPopup();
+      drawn.addLayer(layer);
+      layer.bindPopup(popupFormHTML());
+      setTimeout(()=> layer.openPopup(), 0);
 
       layer.on('popupopen', ()=>{
-        document.getElementById('savePoint').onclick = ()=>{
+        const saveBtn   = document.getElementById('savePoint');
+        const cancelBtn = document.getElementById('cancelPoint');
+
+        if (saveBtn) saveBtn.onclick = ()=>{
           const participant = document.getElementById('pname').value.trim();
-          const ward = document.getElementById('ward').value.trim();
-          const contact = document.getElementById('contact').value.trim();
+          const ward        = document.getElementById('ward').value.trim();
+          const contact     = document.getElementById('contact').value.trim();
           const sessionNote = document.getElementById('sessionNote').value.trim();
-          const status = document.getElementById('f_status').value;
-          const access = document.getElementById('f_access').value;
-          const risk = document.getElementById('f_risk').value;
-          const notes = document.getElementById('f_notes').value.trim();
+          const status      = document.getElementById('f_status').value;
+          const access      = document.getElementById('f_access').value;
+          const risk        = document.getElementById('f_risk').value;
+          const notes       = document.getElementById('f_notes').value.trim();
 
           const feature = {
             type:'Feature',
@@ -232,12 +253,13 @@
           };
 
           submissions.push(feature);
-          drawn.addLayer(layer);
+          saveLocal();
           layer.closePopup();
           toast('Point saved.');
         };
-        document.getElementById('cancelPoint').onclick = ()=>{
-          map.removeLayer(layer);
+
+        if (cancelBtn) cancelBtn.onclick = ()=>{
+          drawn.removeLayer(layer);
           toast('Point discarded');
         };
       });
@@ -257,7 +279,6 @@
       const url  = URL.createObjectURL(blob);
 
       if(isIOS()){
-        // iOS: open in new tab so user can Share → Save to Files
         window.open(url, '_blank');
         setTimeout(()=>URL.revokeObjectURL(url), 1000);
         alert('On iPhone/iPad, use the Share button in the new tab → "Save to Files" to keep the .geojson.');
@@ -268,6 +289,36 @@
         setTimeout(()=>URL.revokeObjectURL(url), 1000);
       }
     });
+
+    // Submit to Researcher (Google Apps Script)
+    async function submitToResearcher() {
+      if (submissions.length === 0) { alert("No points to submit yet."); return; }
+      const payload = {
+        token: SUBMIT_TOKEN,
+        participant: document.getElementById('pname').value.trim(),
+        ward:        document.getElementById('ward').value.trim(),
+        contact:     document.getElementById('contact').value.trim(),
+        sessionNote: document.getElementById('sessionNote').value.trim(),
+        features:    submissions,
+        userAgent:   navigator.userAgent || ""
+      };
+      try {
+        const res  = await fetch(GAS_WEBAPP_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (res.ok) {
+          toast("Submitted to researcher. Thank you!");
+        } else {
+          alert("Submission error: " + (data.message || res.statusText));
+        }
+      } catch (e) {
+        alert("Network error. Please try again when you have connectivity.");
+      }
+    }
+    document.getElementById('submitBtn').addEventListener('click', submitToResearcher);
 
     // Dev safety: if app is already visible on load, ensure proper map size
     window.addEventListener('load', ()=> { if (document.getElementById('app').style.display==='block') map.invalidateSize(true); });
